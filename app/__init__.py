@@ -1,0 +1,1 @@
+"""Streaming Assistant Gateway package."""

@@ -1,0 +1,98 @@
+Metadata-Version: 2.4
+Name: streaming-assistant-gateway
+Version: 0.1.0
+Summary: High-performance streaming assistant gateway with FastAPI and gRPC
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: grpcio>=1.67.0
+Requires-Dist: grpcio-tools>=1.67.0
+Requires-Dist: protobuf>=5.28.0
+Requires-Dist: redis[hiredis]>=5.2.0
+Requires-Dist: structlog>=24.4.0
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: opentelemetry-api>=1.28.0
+Requires-Dist: opentelemetry-sdk>=1.28.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: ruff>=0.7.0; extra == "dev"
+Requires-Dist: black>=24.10.0; extra == "dev"
+Dynamic: license-file
+
+# Streaming Assistant Gateway
+
+High-performance streaming gateway that exposes a FastAPI interface and bridges to upstream gRPC assistant providers.
+
+## Features
+
+- FastAPI gateway with server-sent event streaming endpoint
+- Async gRPC service contract and server scaffold
+- Redis connection pooling primitives
+- Structured JSON logging with correlation IDs
+- Middleware for rate limiting, tracing, and error handling
+- Dockerized local development + Kubernetes deployment manifests
+
+## Repository Layout
+
+```text
+protos/
+app/
+  core/
+  grpc_server/
+  gateway/
+  services/
+  middleware/
+tests/
+deploy/
+```
+
+## Quickstart
+
+1. Install dependencies:
+
+   ```bash
+   pip install -e ".[dev]"
+   ```
+
+2. Compile protobuf stubs:
+
+   ```bash
+   make proto
+   ```
+
+3. Run locally:
+
+   ```bash
+   make dev
+   ```
+
+4. Run tests:
+
+   ```bash
+   make test
+   ```
+
+## Environment Variables
+
+- `REDIS_URL`
+- `GRPC_UPSTREAM_TARGET`
+- `SERVER_HOST`, `SERVER_PORT`
+- `GRPC_BIND_HOST`, `GRPC_BIND_PORT`
+- `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST`
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+## Kubernetes
+
+Apply manifests under `deploy/`:
+
+```bash
+kubectl apply -f deploy/
+```

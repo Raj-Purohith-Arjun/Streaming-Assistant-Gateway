@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package streaming_assistant.v1;
+
+service StreamingAssistant {
+  rpc StreamQuery(QueryRequest) returns (stream QueryResponse);
+}
+
+message QueryRequest {
+  string session_id = 1;
+  string user_id = 2;
+  string prompt = 3;
+  map<string, string> metadata = 4;
+  string cancellation_token = 5;
+  bool cancel_requested = 6;
+}
+
+message QueryResponse {
+  string session_id = 1;
+  string chunk = 2;
+  bool done = 3;
+  string request_id = 4;
+  map<string, string> metadata = 5;
+}

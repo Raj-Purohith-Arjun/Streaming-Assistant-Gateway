@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: streaming-assistant-gateway-config
+data:
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "8000"
+  GRPC_BIND_HOST: "0.0.0.0"
+  GRPC_BIND_PORT: "50051"
+  GRPC_UPSTREAM_TARGET: "mock-upstream:50052"
+  REDIS_URL: "redis://redis:6379/0"
+  RATE_LIMIT_REQUESTS_PER_MINUTE: "120"
+  RATE_LIMIT_BURST: "30"

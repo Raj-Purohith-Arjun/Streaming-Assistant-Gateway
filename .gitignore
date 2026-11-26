@@ -29,6 +29,7 @@ bench/out/
 
 # Private working notes — never push these
 notes/
+antigravity-playbook.md
 
 # Env / secrets
 .env

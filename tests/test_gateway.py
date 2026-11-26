@@ -248,3 +248,19 @@ async def test_gateway_disconnect_revives_on_reconnect() -> None:
   terminal = await gen_store.read_terminal(gen_id)
   assert terminal is not None
   assert terminal.status == TerminalStatus.COMPLETED
+
+
+async def test_gateway_serves_static_demo_page() -> None:
+  """GET /demo returns the static HTML demo page."""
+  service, _ = _build_test_service(tokens=["ok"])
+  app = create_app(service=service)
+
+  async with httpx.AsyncClient(
+    transport=httpx.ASGITransport(app=app),
+    base_url="http://test",
+  ) as client:
+    resp = await client.get("/demo")
+
+  assert resp.status_code == 200
+  assert "text/html" in resp.headers.get("content-type", "")
+  assert "Streaming Assistant Gateway" in resp.text

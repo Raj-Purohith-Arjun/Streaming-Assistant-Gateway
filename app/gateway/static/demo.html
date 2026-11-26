@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Streaming Assistant Gateway — Demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; color: #111; }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+    input, button { padding: 0.5rem 0.75rem; font-size: 0.95rem; }
+    input { flex: 1; min-width: 140px; }
+    button { cursor: pointer; }
+    pre { background: #f6f8fa; border: 1px solid #d0d7de; padding: 0.75rem; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; }
+    .meta { font-size: 0.9rem; color: #444; margin-bottom: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Streaming Assistant Gateway</h1>
+  <div class="row">
+    <input id="sessionId" value="demo-session" placeholder="session_id" />
+    <input id="userId" value="demo-user" placeholder="user_id" />
+    <input id="prompt" value="Explain resumable SSE streams" placeholder="prompt" />
+  </div>
+  <div class="row">
+    <button id="startBtn">Start / Coalesce (POST /v1/stream)</button>
+    <button id="disconnectBtn" disabled>Simulate Disconnect</button>
+    <button id="resumeBtn" disabled>Resume (Last-Event-ID)</button>
+    <button id="stopBtn" disabled>Explicit Stop</button>
+  </div>
+  <div class="meta">
+    Generation ID: <code id="genId">-</code> |
+    Last-Event-ID: <code id="lastId">-</code> |
+    Status: <code id="status">idle</code>
+  </div>
+  <h3>Reassembled Output</h3>
+  <pre id="output"></pre>
+  <h3>SSE Frames</h3>
+  <pre id="events"></pre>
+
+  <script>
+    const els = {
+      sessionId: document.getElementById("sessionId"),
+      userId: document.getElementById("userId"),
+      prompt: document.getElementById("prompt"),
+      startBtn: document.getElementById("startBtn"),
+      disconnectBtn: document.getElementById("disconnectBtn"),
+      resumeBtn: document.getElementById("resumeBtn"),
+      stopBtn: document.getElementById("stopBtn"),
+      genId: document.getElementById("genId"),
+      lastId: document.getElementById("lastId"),
+      status: document.getElementById("status"),
+      output: document.getElementById("output"),
+      events: document.getElementById("events"),
+    };
+
+    let currentGenId = null;
+    let lastEventId = null;
+    let abortCtrl = null;
+
+    function setButtons(streaming) {
+      els.disconnectBtn.disabled = !streaming;
+      els.resumeBtn.disabled = streaming || !currentGenId || !lastEventId;
+      els.stopBtn.disabled = !currentGenId;
+    }
+
+    async function readSseResponse(resp) {
+      const gid = resp.headers.get("x-generation-id");
+      if (gid) {
+        currentGenId = gid;
+        els.genId.textContent = gid;
+      }
+      setButtons(true);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          while (buf.includes("\n\n")) {
+            const idx = buf.indexOf("\n\n");
+            const block = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            if (!block || block.startsWith(":")) continue;
+
+            let evId = null;
+            let evType = "message";
+            let dataRaw = "{}";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("id: ")) evId = line.slice(4);
+              else if (line.startsWith("event: ")) evType = line.slice(7);
+              else if (line.startsWith("data: ")) dataRaw = line.slice(6);
+            }
+            if (evId) {
+              lastEventId = evId;
+              els.lastId.textContent = evId;
+            }
+            const data = JSON.parse(dataRaw);
+            els.events.textContent += `id=${evId || "-"} event=${evType} data=${dataRaw}\n`;
+            if (evType === "token" && typeof data.text === "string") {
+              els.output.textContent += data.text;
+            } else if (evType === "done" || evType === "error") {
+              els.status.textContent = data.status || evType;
+            }
+          }
+        }
+      } catch (err) {
+        if (err.name === "AbortError") {
+          els.status.textContent = "disconnected (client abort)";
+        } else {
+          els.status.textContent = `error: ${err.message}`;
+        }
+      } finally {
+        abortCtrl = null;
+        setButtons(false);
+      }
+    }
+
+    els.startBtn.addEventListener("click", async () => {
+      if (abortCtrl) abortCtrl.abort();
+      els.output.textContent = "";
+      els.events.textContent = "";
+      lastEventId = null;
+      els.lastId.textContent = "-";
+      els.status.textContent = "streaming";
+      abortCtrl = new AbortController();
+      const resp = await fetch("/v1/stream", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          session_id: els.sessionId.value,
+          user_id: els.userId.value,
+          prompt: els.prompt.value,
+        }),
+        signal: abortCtrl.signal,
+      });
+      await readSseResponse(resp);
+    });
+
+    els.disconnectBtn.addEventListener("click", () => {
+      if (abortCtrl) abortCtrl.abort();
+    });
+
+    els.resumeBtn.addEventListener("click", async () => {
+      if (!currentGenId || !lastEventId) return;
+      els.status.textContent = "resuming";
+      abortCtrl = new AbortController();
+      const resp = await fetch(`/v1/generations/${encodeURIComponent(currentGenId)}/stream`, {
+        headers: { "Last-Event-ID": lastEventId },
+        signal: abortCtrl.signal,
+      });
+      await readSseResponse(resp);
+    });
+
+    els.stopBtn.addEventListener("click", async () => {
+      if (!currentGenId) return;
+      const resp = await fetch(`/v1/generations/${encodeURIComponent(currentGenId)}/stop`, {
+        method: "POST",
+      });
+      const body = await resp.json();
+      els.status.textContent = body.status || "STOPPED";
+      if (abortCtrl) abortCtrl.abort();
+    });
+  </script>
+</body>
+</html>

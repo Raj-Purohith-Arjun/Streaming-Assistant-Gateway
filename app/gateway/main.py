@@ -1,7 +1,8 @@
 import hashlib
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.cancel import DeferredCanceller
@@ -82,6 +83,11 @@ def create_app(service: GatewayService | None = None) -> FastAPI:
   @gateway_app.get("/healthz")
   async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+  @gateway_app.get("/demo")
+  async def demo_page() -> FileResponse:
+    demo_path = Path(__file__).resolve().parent / "static" / "demo.html"
+    return FileResponse(demo_path, media_type="text/html")
 
   @gateway_app.post("/v1/stream")
   async def stream_query(request: StreamRequest) -> StreamingResponse:

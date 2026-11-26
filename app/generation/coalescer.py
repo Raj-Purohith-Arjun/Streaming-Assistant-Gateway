@@ -1,8 +1,26 @@
 import asyncio
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
 from app.generation.state import GenerationLifecycle, GenerationStatus
+
+
+@runtime_checkable
+class GenerationRegistryProtocol(Protocol):
+  """Protocol shared by in-memory and Redis-backed generation registries."""
+
+  async def get_or_create(self, request_key: str) -> tuple[str, bool]:
+    """Return ``(gen_id, created)`` for ``request_key``, coalescing live requests (I9)."""
+    ...
+
+  async def transition(self, gen_id: str, target: GenerationStatus) -> GenerationStatus:
+    """Transition ``gen_id`` to ``target`` using the lifecycle state machine."""
+    ...
+
+  async def get_status(self, gen_id: str) -> GenerationStatus:
+    """Return the current ``GenerationStatus`` for ``gen_id``."""
+    ...
 
 
 @dataclass(frozen=True, slots=True)

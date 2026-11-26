@@ -1,4 +1,10 @@
-from app.generation.coalescer import CoalesceResult, GenerationCoalescer, GenerationRegistry
+from app.generation.coalescer import (
+  CoalesceResult,
+  GenerationCoalescer,
+  GenerationRegistry,
+  GenerationRegistryProtocol,
+)
+from app.generation.redis_registry import DEFAULT_REGISTRY_TTL_SECONDS, RedisGenerationRegistry
 from app.generation.state import (
   TERMINAL_STATES,
   TERMINAL_STATUSES,
@@ -10,14 +16,17 @@ from app.generation.state import (
 )
 
 __all__ = [
+  "DEFAULT_REGISTRY_TTL_SECONDS",
   "TERMINAL_STATES",
   "TERMINAL_STATUSES",
   "CoalesceResult",
   "GenerationCoalescer",
   "GenerationLifecycle",
   "GenerationRegistry",
+  "GenerationRegistryProtocol",
   "GenerationState",
   "GenerationStatus",
   "InvalidTransitionError",
+  "RedisGenerationRegistry",
   "validate_transition",
 ]

@@ -5,14 +5,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.cancel import DeferredCanceller
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.redis import get_redis_client
 from app.gateway.service import GatewayService
-from app.generation import GenerationRegistry
+from app.generation import RedisGenerationRegistry
 from app.middleware.error_handling import ErrorHandlingMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.tracing import CorrelationIdMiddleware
+from app.producer import ProducerConfig
 from app.sse import SseEncoder
 from app.store.protocol import InvalidOffsetError, OffsetAheadError
 from app.store.redis_store import RedisGenerationStore
@@ -30,16 +31,17 @@ class StreamRequest(BaseModel):
   cancellation_token: str | None = None
 
 
-def _build_default_service() -> GatewayService:
+def _build_default_service(settings: Settings | None = None) -> GatewayService:
+  cfg = settings or get_settings()
   redis = get_redis_client()
-  redis_store = RedisGenerationStore(redis)
-  subscribers = RedisSubscriberRegistry(redis)
-  registry = GenerationRegistry()
+  redis_store = RedisGenerationStore(redis, ttl_seconds=cfg.generation_ttl_seconds)
+  subscribers = RedisSubscriberRegistry(redis, ttl_seconds=cfg.subscriber_ttl_seconds)
+  registry = RedisGenerationRegistry(redis, ttl_seconds=cfg.generation_ttl_seconds)
   canceller = DeferredCanceller(
     registry=registry,
     subscribers=subscribers,
     gen_store=redis_store,
-    drain_timeout_seconds=5.0,
+    drain_timeout_seconds=cfg.drain_timeout_seconds,
   )
   upstream = SyntheticAdapter(
     tokens=["Hello", " from", " Streaming", " Assistant", " Gateway!"],
@@ -53,6 +55,7 @@ def _build_default_service() -> GatewayService:
     canceller=canceller,
     upstream=upstream,
     sse_encoder=SseEncoder(),
+    producer_config=ProducerConfig(lease_ttl_ms=cfg.lease_ttl_ms),
   )
 
 
@@ -65,7 +68,7 @@ def create_app(service: GatewayService | None = None) -> FastAPI:
   """Create and configure the FastAPI gateway application."""
   settings = get_settings()
   configure_logging()
-  gateway_service = service or _build_default_service()
+  gateway_service = service or _build_default_service(settings)
 
   gateway_app = FastAPI(title="Streaming Assistant Gateway", version="0.1.0")
   gateway_app.add_middleware(ErrorHandlingMiddleware)

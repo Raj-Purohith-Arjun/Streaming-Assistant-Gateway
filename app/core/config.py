@@ -26,6 +26,11 @@ class Settings(BaseSettings):
   )
   rate_limit_burst: int = Field(default=30, alias="RATE_LIMIT_BURST")
 
+  generation_ttl_seconds: int = Field(default=3600, alias="GENERATION_TTL_SECONDS")
+  drain_timeout_seconds: float = Field(default=5.0, alias="DRAIN_TIMEOUT_SECONDS")
+  lease_ttl_ms: int = Field(default=5000, alias="LEASE_TTL_MS")
+  subscriber_ttl_seconds: float = Field(default=30.0, alias="SUBSCRIBER_TTL_SECONDS")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

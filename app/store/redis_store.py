@@ -1,9 +1,14 @@
 import json
 from collections.abc import AsyncIterator
-from typing import Any
 
 from redis.asyncio import Redis
 
+from app.store._codec import (
+  decode_fields,
+  decode_redis_str,
+  extract_xread_entries,
+  parse_stream_entries,
+)
 from app.store._lua import (
   ACQUIRE_LEASE_LUA,
   APPEND_TOKEN_LUA,
@@ -23,16 +28,6 @@ from app.store.protocol import (
 )
 
 DEFAULT_TTL_SECONDS = 3600
-
-
-def _decode(value: str | bytes) -> str:
-  if isinstance(value, bytes):
-    return value.decode("utf-8")
-  return value
-
-
-def _decode_fields(fields: dict[Any, Any]) -> dict[str, str]:
-  return {_decode(k): _decode(v) for k, v in fields.items()}
 
 
 class RedisGenerationStore:
@@ -89,13 +84,13 @@ class RedisGenerationStore:
     )
     ok = int(result[0])
     if ok == 0:
-      err_code = _decode(result[1])
+      err_code = decode_redis_str(result[1])
       if err_code == "STALE_FENCE":
         raise StaleLeaseError(f"Stale fence {fence} for {gen_id!r}")
       raise GenerationClosedError(f"Generation {gen_id!r} is already terminal")
 
-    index = int(_decode(result[1]))
-    entry_id = _decode(result[2])
+    index = int(decode_redis_str(result[1]))
+    entry_id = decode_redis_str(result[2])
     return TokenEvent(
       index=index,
       entry_id=entry_id,
@@ -111,48 +106,10 @@ class RedisGenerationStore:
     for _, raw_fields in entries:
       if not raw_fields:
         continue
-      fields = _decode_fields(raw_fields)
+      fields = decode_fields(raw_fields)
       if fields.get("kind") == "token":
         return int(fields["index"])
     return -1
-
-  @staticmethod
-  def _extract_xread_entries(response: Any) -> list[tuple[Any, Any]]:
-    if not response:
-      return []
-    if isinstance(response, dict):
-      first_stream_entries: list[Any] = next(iter(response.values()), [])
-      if first_stream_entries and isinstance(first_stream_entries[0], list):
-        return list(first_stream_entries[0])
-      return list(first_stream_entries)
-    return list(response[0][1])
-
-  @staticmethod
-  def _parse_stream_entries(
-    raw_entries: list[tuple[Any, Any]],
-  ) -> tuple[list[TokenEvent], str | None, bool]:
-    events: list[TokenEvent] = []
-    last_cursor: str | None = None
-    saw_terminal = False
-    for raw_entry_id, raw_fields in raw_entries:
-      if raw_entry_id is None or not raw_fields:
-        continue
-      entry_id = _decode(raw_entry_id)
-      last_cursor = entry_id
-      fields = _decode_fields(raw_fields)
-      if fields.get("kind") == "terminal":
-        saw_terminal = True
-        break
-      index = int(fields["index"])
-      events.append(
-        TokenEvent(
-          index=index,
-          entry_id=entry_id,
-          event_id=format_event_id(index, entry_id),
-          data=fields["data"],
-        )
-      )
-    return events, last_cursor, saw_terminal
 
   async def read_from(
     self,
@@ -177,9 +134,9 @@ class RedisGenerationStore:
 
     while True:
       response = await self._redis.xread(streams={stream_key: cursor}, block=None)
-      raw_entries = self._extract_xread_entries(response)
+      raw_entries = extract_xread_entries(response)
       if raw_entries:
-        events, next_cursor, saw_terminal = self._parse_stream_entries(raw_entries)
+        events, next_cursor, saw_terminal = parse_stream_entries(raw_entries)
         if next_cursor is not None:
           cursor = next_cursor
         for event in events:
@@ -192,11 +149,11 @@ class RedisGenerationStore:
         break
 
       blocked = await self._redis.xread(streams={stream_key: cursor}, block=block_ms)
-      blocked_entries = self._extract_xread_entries(blocked)
+      blocked_entries = extract_xread_entries(blocked)
       if not blocked_entries:
         break
 
-      events, next_cursor, saw_terminal = self._parse_stream_entries(blocked_entries)
+      events, next_cursor, saw_terminal = parse_stream_entries(blocked_entries)
       if next_cursor is not None:
         cursor = next_cursor
       for event in events:
@@ -226,12 +183,12 @@ class RedisGenerationStore:
     )
     ok = int(result[0])
     if ok == 0:
-      err_code = _decode(result[1])
+      err_code = decode_redis_str(result[1])
       if err_code == "STALE_FENCE":
         raise StaleLeaseError(f"Stale fence {fence} for {gen_id!r}")
       raise GenerationClosedError(f"Generation {gen_id!r} is already terminal")
 
-    data = json.loads(_decode(result[1]))
+    data = json.loads(decode_redis_str(result[1]))
     return TerminalState(
       status=TerminalStatus(data["status"]),
       reason=data["reason"],
@@ -243,7 +200,7 @@ class RedisGenerationStore:
     raw = await self._redis.get(self.terminal_key(gen_id))
     if raw is None:
       return None
-    data = json.loads(_decode(raw))
+    data = json.loads(decode_redis_str(raw))
     return TerminalState(
       status=TerminalStatus(data["status"]),
       reason=data["reason"],
@@ -266,7 +223,7 @@ class RedisGenerationStore:
     )
     if int(result[0]) == 0:
       return None
-    return Lease(gen_id=gen_id, owner_id=owner_id, fence=int(_decode(result[1])))
+    return Lease(gen_id=gen_id, owner_id=owner_id, fence=int(decode_redis_str(result[1])))
 
   async def renew_lease(
     self,
@@ -302,5 +259,5 @@ class RedisGenerationStore:
     raw = await self._redis.get(self.lease_key(gen_id))
     if raw is None:
       return None
-    _, _, fence_str = _decode(raw).rpartition(":")
+    _, _, fence_str = decode_redis_str(raw).rpartition(":")
     return int(fence_str)

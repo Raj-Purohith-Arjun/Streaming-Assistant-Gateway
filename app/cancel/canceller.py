@@ -2,7 +2,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 
-from app.generation import TERMINAL_STATUSES, GenerationRegistry, GenerationStatus
+from app.generation import TERMINAL_STATUSES, GenerationRegistryProtocol, GenerationStatus
 from app.store.protocol import GenerationClosedError, GenerationStore, TerminalStatus
 from app.store.subscribers import SubscriberRegistry
 
@@ -12,7 +12,7 @@ class DeferredCanceller:
 
   def __init__(
     self,
-    registry: GenerationRegistry,
+    registry: GenerationRegistryProtocol,
     subscribers: SubscriberRegistry,
     gen_store: GenerationStore,
     drain_timeout_seconds: float,

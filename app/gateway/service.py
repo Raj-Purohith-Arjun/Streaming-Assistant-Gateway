@@ -7,7 +7,7 @@ import httpx
 import structlog
 
 from app.cancel import DeferredCanceller
-from app.generation import GenerationRegistry, GenerationStatus, InvalidTransitionError
+from app.generation import GenerationRegistryProtocol, GenerationStatus, InvalidTransitionError
 from app.producer import Producer, ProducerConfig
 from app.sse import SseEncoder
 from app.store.lease import LeaseStore, StaleLeaseError
@@ -31,7 +31,7 @@ class GatewayService:
     gen_store: GenerationStore,
     lease_store: LeaseStore,
     subscribers: SubscriberRegistry,
-    registry: GenerationRegistry,
+    registry: GenerationRegistryProtocol,
     canceller: DeferredCanceller,
     upstream: UpstreamAdapter,
     sse_encoder: SseEncoder,

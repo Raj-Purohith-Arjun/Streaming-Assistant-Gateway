@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from app.core.config import get_settings
+from app.store.lease import StaleLeaseError
 from app.store.protocol import (
   GenerationClosedError,
   GenerationStore,
@@ -114,3 +115,18 @@ async def test_redis_blocking_xread_receives_tokens_and_wakes_on_terminal(
   await asyncio.wait_for(reader_task, timeout=2.0)
   assert [e.data for e in received] == ["hello ", "world"]
   assert [e.index for e in received] == [0, 1]
+
+
+async def test_redis_expired_lease_rejected_before_new_acquire(redis_client: Redis) -> None:
+  store = RedisGenerationStore(redis_client, ttl_seconds=120)
+  gen_id = f"gen-{uuid.uuid4()}"
+
+  lease = await store.acquire_lease(gen_id, "replica-a", ttl_ms=50)
+  assert lease is not None
+  assert lease.fence == 1
+
+  await asyncio.sleep(0.1)
+  with pytest.raises(StaleLeaseError):
+    await store.append_token(gen_id, "after-expiry", fence=lease.fence)
+  with pytest.raises(StaleLeaseError):
+    await store.mark_terminal(gen_id, TerminalStatus.COMPLETED, fence=lease.fence)

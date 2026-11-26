@@ -1,3 +1,4 @@
+from app.store.lease import Lease, LeaseStore, StaleLeaseError
 from app.store.protocol import (
   GenerationClosedError,
   GenerationStore,
@@ -16,8 +17,11 @@ __all__ = [
   "GenerationClosedError",
   "GenerationStore",
   "InvalidOffsetError",
+  "Lease",
+  "LeaseStore",
   "OffsetAheadError",
   "RedisGenerationStore",
+  "StaleLeaseError",
   "TerminalState",
   "TerminalStatus",
   "TokenEvent",

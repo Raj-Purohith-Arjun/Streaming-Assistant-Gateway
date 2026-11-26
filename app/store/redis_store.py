@@ -4,6 +4,14 @@ from typing import Any
 
 from redis.asyncio import Redis
 
+from app.store._lua import (
+  ACQUIRE_LEASE_LUA,
+  APPEND_TOKEN_LUA,
+  MARK_TERMINAL_LUA,
+  RELEASE_LEASE_LUA,
+  RENEW_LEASE_LUA,
+)
+from app.store.lease import Lease, StaleLeaseError
 from app.store.protocol import (
   GenerationClosedError,
   OffsetAheadError,
@@ -15,43 +23,6 @@ from app.store.protocol import (
 )
 
 DEFAULT_TTL_SECONDS = 3600
-
-# Atomically checks terminal state, assigns monotonic index via XLEN, appends token, and sets TTL.
-_APPEND_TOKEN_LUA = """
-if redis.call('EXISTS', KEYS[2]) == 1 then
-  return {0, 'CLOSED'}
-end
-local index = redis.call('XLEN', KEYS[1])
-local entry_id = redis.call(
-  'XADD', KEYS[1], '*',
-  'kind', 'token',
-  'index', tostring(index),
-  'data', ARGV[1]
-)
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
-return {1, tostring(index), entry_id}
-"""
-
-# Atomically records terminal state with TTL and appends a terminal sentinel to wake XREAD readers.
-_MARK_TERMINAL_LUA = """
-if redis.call('EXISTS', KEYS[2]) == 1 then
-  return {0, 'CLOSED'}
-end
-local len = redis.call('XLEN', KEYS[1])
-local last_index = cjson.null
-if len > 0 then
-  last_index = len - 1
-end
-local reason = ARGV[2]
-if ARGV[3] == '0' then
-  reason = cjson.null
-end
-local payload = cjson.encode({status = ARGV[1], reason = reason, last_index = last_index})
-redis.call('SET', KEYS[2], payload, 'EX', tonumber(ARGV[4]))
-redis.call('XADD', KEYS[1], '*', 'kind', 'terminal', 'status', ARGV[1])
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
-return {1, payload}
-"""
 
 
 def _decode(value: str | bytes) -> str:
@@ -65,15 +36,18 @@ def _decode_fields(fields: dict[Any, Any]) -> dict[str, str]:
 
 
 class RedisGenerationStore:
-  """Redis Streams-backed ``GenerationStore`` with atomic I4 enforcement and explicit TTLs."""
+  """Redis Streams-backed ``GenerationStore`` and ``LeaseStore`` with atomic Lua enforcement."""
 
   def __init__(self, redis: Redis, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
     if ttl_seconds <= 0:
       raise ValueError(f"ttl_seconds must be positive, got {ttl_seconds}")
     self._redis = redis
     self._ttl_seconds = ttl_seconds
-    self._append_script = self._redis.register_script(_APPEND_TOKEN_LUA)
-    self._mark_terminal_script = self._redis.register_script(_MARK_TERMINAL_LUA)
+    self._append_script = self._redis.register_script(APPEND_TOKEN_LUA)
+    self._mark_terminal_script = self._redis.register_script(MARK_TERMINAL_LUA)
+    self._acquire_lease_script = self._redis.register_script(ACQUIRE_LEASE_LUA)
+    self._renew_lease_script = self._redis.register_script(RENEW_LEASE_LUA)
+    self._release_lease_script = self._redis.register_script(RELEASE_LEASE_LUA)
 
   @staticmethod
   def stream_key(gen_id: str) -> str:
@@ -85,14 +59,39 @@ class RedisGenerationStore:
     """Return the Redis terminal marker key for ``gen_id``."""
     return f"gen:{gen_id}:terminal"
 
-  async def append_token(self, gen_id: str, token: str) -> TokenEvent:
-    """Append a token to ``gen_id`` atomically, raising ``GenerationClosedError`` if terminal."""
+  @staticmethod
+  def lease_key(gen_id: str) -> str:
+    """Return the Redis active-lease key for ``gen_id``."""
+    return f"gen:{gen_id}:lease"
+
+  @staticmethod
+  def fence_key(gen_id: str) -> str:
+    """Return the Redis monotonic fencing-token key for ``gen_id``."""
+    return f"gen:{gen_id}:fence"
+
+  async def append_token(
+    self,
+    gen_id: str,
+    token: str,
+    *,
+    fence: int | None = None,
+  ) -> TokenEvent:
+    """Append a token to ``gen_id`` atomically, enforcing I4 and optional fencing."""
+    fence_arg = str(fence) if fence is not None else ""
     result = await self._append_script(
-      keys=[self.stream_key(gen_id), self.terminal_key(gen_id)],
-      args=[token, self._ttl_seconds],
+      keys=[
+        self.stream_key(gen_id),
+        self.terminal_key(gen_id),
+        self.fence_key(gen_id),
+        self.lease_key(gen_id),
+      ],
+      args=[token, self._ttl_seconds, fence_arg],
     )
     ok = int(result[0])
     if ok == 0:
+      err_code = _decode(result[1])
+      if err_code == "STALE_FENCE":
+        raise StaleLeaseError(f"Stale fence {fence} for {gen_id!r}")
       raise GenerationClosedError(f"Generation {gen_id!r} is already terminal")
 
     index = int(_decode(result[1]))
@@ -210,15 +209,26 @@ class RedisGenerationStore:
     gen_id: str,
     status: TerminalStatus,
     reason: str | None = None,
+    *,
+    fence: int | None = None,
   ) -> TerminalState:
     """Atomically mark ``gen_id`` as terminal and wake any blocked ``XREAD`` readers."""
     has_reason = "1" if reason is not None else "0"
+    fence_arg = str(fence) if fence is not None else ""
     result = await self._mark_terminal_script(
-      keys=[self.stream_key(gen_id), self.terminal_key(gen_id)],
-      args=[status.value, reason or "", has_reason, self._ttl_seconds],
+      keys=[
+        self.stream_key(gen_id),
+        self.terminal_key(gen_id),
+        self.fence_key(gen_id),
+        self.lease_key(gen_id),
+      ],
+      args=[status.value, reason or "", has_reason, self._ttl_seconds, fence_arg],
     )
     ok = int(result[0])
     if ok == 0:
+      err_code = _decode(result[1])
+      if err_code == "STALE_FENCE":
+        raise StaleLeaseError(f"Stale fence {fence} for {gen_id!r}")
       raise GenerationClosedError(f"Generation {gen_id!r} is already terminal")
 
     data = json.loads(_decode(result[1]))
@@ -239,3 +249,58 @@ class RedisGenerationStore:
       reason=data["reason"],
       last_index=data["last_index"],
     )
+
+  async def acquire_lease(
+    self,
+    gen_id: str,
+    owner_id: str,
+    *,
+    ttl_ms: int,
+  ) -> Lease | None:
+    """Atomically acquire the producer lease for ``gen_id`` with explicit TTLs."""
+    if ttl_ms <= 0:
+      raise ValueError(f"ttl_ms must be positive, got {ttl_ms}")
+    result = await self._acquire_lease_script(
+      keys=[self.lease_key(gen_id), self.fence_key(gen_id)],
+      args=[owner_id, ttl_ms, self._ttl_seconds],
+    )
+    if int(result[0]) == 0:
+      return None
+    return Lease(gen_id=gen_id, owner_id=owner_id, fence=int(_decode(result[1])))
+
+  async def renew_lease(
+    self,
+    gen_id: str,
+    owner_id: str,
+    fence: int,
+    *,
+    ttl_ms: int,
+  ) -> Lease:
+    """Extend lease TTL atomically; raise ``StaleLeaseError`` if expired or superseded."""
+    if ttl_ms <= 0:
+      raise ValueError(f"ttl_ms must be positive, got {ttl_ms}")
+    ok = await self._renew_lease_script(
+      keys=[self.lease_key(gen_id), self.fence_key(gen_id)],
+      args=[f"{owner_id}:{fence}", ttl_ms, self._ttl_seconds],
+    )
+    if int(ok) == 0:
+      raise StaleLeaseError(f"Lease for {gen_id!r} is expired or superseded")
+    return Lease(gen_id=gen_id, owner_id=owner_id, fence=fence)
+
+  async def release_lease(self, gen_id: str, owner_id: str, fence: int) -> bool:
+    """Release lease atomically; raise ``StaleLeaseError`` if expired or superseded."""
+    ok = await self._release_lease_script(
+      keys=[self.lease_key(gen_id)],
+      args=[f"{owner_id}:{fence}"],
+    )
+    if int(ok) == 0:
+      raise StaleLeaseError(f"Lease for {gen_id!r} is expired or superseded")
+    return True
+
+  async def current_fence(self, gen_id: str) -> int | None:
+    """Return the active fencing token for ``gen_id``, or ``None`` if no lease is active."""
+    raw = await self._redis.get(self.lease_key(gen_id))
+    if raw is None:
+      return None
+    _, _, fence_str = _decode(raw).rpartition(":")
+    return int(fence_str)

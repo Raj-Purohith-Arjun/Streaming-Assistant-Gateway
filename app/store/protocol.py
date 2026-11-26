@@ -79,7 +79,13 @@ def parse_event_id(event_id: str) -> tuple[int, str]:
 class GenerationStore(Protocol):
   """Abstract storage protocol for the append-only generation token log."""
 
-  async def append_token(self, gen_id: str, token: str) -> TokenEvent:
+  async def append_token(
+    self,
+    gen_id: str,
+    token: str,
+    *,
+    fence: int | None = None,
+  ) -> TokenEvent:
     """Append a token to ``gen_id`` and return the stored ``TokenEvent``.
 
     Raises ``GenerationClosedError`` if the generation is already terminal (I4).
@@ -106,6 +112,8 @@ class GenerationStore(Protocol):
     gen_id: str,
     status: TerminalStatus,
     reason: str | None = None,
+    *,
+    fence: int | None = None,
   ) -> TerminalState:
     """Record a terminal state for ``gen_id``.
 

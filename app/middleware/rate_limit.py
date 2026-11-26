@@ -1,19 +1,26 @@
 import time
 from collections import defaultdict, deque
 
-from fastapi import HTTPException, Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-  def __init__(self, app, requests_per_minute: int, burst: int) -> None:  # type: ignore[no-untyped-def]
-    super().__init__(app)
+class RateLimitMiddleware:
+  """In-process sliding window rate limiting pure ASGI middleware."""
+
+  def __init__(self, app: ASGIApp, requests_per_minute: int, burst: int) -> None:
+    self.app = app
     self._requests_per_minute = requests_per_minute
     self._burst = burst
     self._request_windows: dict[str, deque[float]] = defaultdict(deque)
 
-  async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
-    client_key = request.client.host if request.client else "unknown"
+  async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    if scope["type"] != "http":
+      await self.app(scope, receive, send)
+      return
+
+    client = scope.get("client")
+    client_key = client[0] if client else "unknown"
     now = time.time()
     window = self._request_windows[client_key]
 
@@ -21,7 +28,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
       window.popleft()
 
     if len(window) >= self._requests_per_minute + self._burst:
-      raise HTTPException(status_code=429, detail="Rate limit exceeded")
+      response = JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+      await response(scope, receive, send)
+      return
 
     window.append(now)
-    return await call_next(request)
+    await self.app(scope, receive, send)

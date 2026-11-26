@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.Python
+
+# Generated protobuf — built at build time, never committed
+app/grpc_server/generated/*_pb2.py
+app/grpc_server/generated/*_pb2_grpc.py
+app/grpc_server/generated/*_pb2.pyi
+
+# Test / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Benchmark output — commit curated results under docs/benchmarks/ only
+bench/out/
+*.prof
+
+# Private working notes — never push these
+notes/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.key
+service-account*.json
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp

@@ -72,6 +72,9 @@ class Producer:
           lease.fence,
           ttl_ms=self._config.lease_ttl_ms,
         )
+        # Stop producing within T + heartbeat_interval if cancelled/expired externally (I6, I8).
+        if await self._gen_store.read_terminal(gen_id) is not None:
+          return
 
     async def _pump_tokens() -> None:
       async for token in upstream:
@@ -103,6 +106,9 @@ class Producer:
         if isinstance(pump_exc, StaleLeaseError):
           # Lost fencing mid-write: do not attempt mark_terminal.
           raise pump_exc
+        if isinstance(pump_exc, GenerationClosedError):
+          # Raced with external mark_terminal (e.g. EXPIRED/STOPPED): exit cleanly.
+          return False
         with contextlib.suppress(StaleLeaseError, GenerationClosedError):
           await self._gen_store.mark_terminal(
             gen_id,

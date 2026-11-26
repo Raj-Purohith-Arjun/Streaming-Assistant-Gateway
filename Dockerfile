@@ -11,7 +11,7 @@ RUN pip install --upgrade pip && pip install --prefix=/install .
 COPY protos ./protos
 COPY app ./app
 
-RUN python -m grpc_tools.protoc \
+RUN PYTHONPATH=/install/lib/python3.11/site-packages python -m grpc_tools.protoc \
     -I./protos \
     --python_out=./app/grpc_server/generated \
     --grpc_python_out=./app/grpc_server/generated \

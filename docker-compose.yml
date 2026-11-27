@@ -11,6 +11,9 @@ services:
       GRPC_UPSTREAM_TARGET: mock-upstream:50052
       RATE_LIMIT_REQUESTS_PER_MINUTE: 120
       RATE_LIMIT_BURST: 30
+      UPSTREAM_PROVIDER: ${UPSTREAM_PROVIDER:-synthetic}
+      UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:-}
+      UPSTREAM_MODEL: ${UPSTREAM_MODEL:-}
     depends_on:
       redis:
         condition: service_healthy

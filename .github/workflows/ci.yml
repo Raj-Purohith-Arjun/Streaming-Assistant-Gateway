@@ -40,13 +40,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]" mypy httpx respx
 
+      - name: Generate protobuf stubs
+        run: make proto
+
       - name: Ruff lint
-        run: ruff check app/ tests/
+        run: ruff check app/ tests/ bench/
 
       - name: Type check (mypy)
         run: >-
           mypy
           app/cancel
+          app/core
           app/gateway
           app/generation
           app/middleware
@@ -54,7 +58,9 @@ jobs:
           app/sse
           app/store
           app/upstream
+          app/grpc_server/server.py
           tests/
+          bench/
 
       - name: Run pytest
         run: pytest tests/ -v

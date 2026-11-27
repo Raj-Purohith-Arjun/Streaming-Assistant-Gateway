@@ -94,7 +94,16 @@ cd Streaming-Assistant-Gateway
 cp .env.example .env
 ```
 
-### 2. Start with Docker Compose
+### 2. Verify from a Clean Clone
+Install dev dependencies, start Redis, and run `make verify` first (protobuf stubs in `app/grpc_server/generated/` are gitignored, so `make verify` runs `make proto` before `ruff`, `mypy`, and `pytest`):
+```bash
+pip install -e ".[dev]"
+docker compose up -d redis
+REDIS_URL="redis://localhost:6379/0" make verify
+```
+> Without Redis running, `make verify` passes 65 tests and cleanly skips the 15 Redis integration tests.
+
+### 3. Start with Docker Compose
 ```bash
 docker compose up -d --build
 ```
@@ -102,7 +111,7 @@ This starts:
 - **Gateway**: HTTP on port `8000`, gRPC on port `50051`.
 - **Redis**: Port `6379` with automatic health checks.
 
-### 3. Open Interactive Demo
+### 4. Open Interactive Demo
 Navigate to **`http://localhost:8000/demo`** in your browser.
 
 - **Start / Coalesce**: Initiates generation or attaches to a live stream.
@@ -187,18 +196,14 @@ python -m bench.sweep
 
 ## Development & Test Suite
 
-Verify all 80 tests (unit, Hypothesis property tests, chaos simulations, Redis integration):
+Always generate protobuf stubs (`make proto`) before running type checks or tests on a clean clone, or run `make verify` to execute the full pipeline (`proto` → `ruff` → `mypy` → `pytest`):
 
 ```bash
-# 1. Start local Redis
+# 1. Start local Redis (needed for the 15 live-Redis tests; 65 tests run without it)
 docker compose up -d redis
 
-# 2. Run full suite
-REDIS_URL="redis://localhost:6379/0" pytest tests/ -v
-
-# 3. Lint and type-check
-ruff check app/ tests/ bench/
-mypy app/ tests/ bench/
+# 2. Generate stubs, lint, type-check, and run all 80 tests
+REDIS_URL="redis://localhost:6379/0" make verify
 ```
 
 ---

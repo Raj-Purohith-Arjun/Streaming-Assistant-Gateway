@@ -45,6 +45,10 @@ line-length = 100
 target-version = "py311"
 exclude = ["app/grpc_server/generated"]
 
+[[tool.mypy.overrides]]
+module = ["app.grpc_server.generated.*"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -57,6 +57,19 @@ class DeferredCanceller:
     if self._on_cancel is not None:
       await self._on_cancel(gen_id)
 
+  async def schedule_drain_if_empty(self, gen_id: str) -> bool:
+    """Transition RUNNING -> DRAINING and arm the drain timer if active_count is 0."""
+    async with self._lock:
+      if (
+        await self._subscribers.active_count(gen_id) == 0
+        and await self._registry.get_status(gen_id) == GenerationStatus.RUNNING
+      ):
+        await self._registry.transition(gen_id, GenerationStatus.DRAINING)
+        await self._cancel_drain_timer(gen_id)
+        self._drain_tasks[gen_id] = asyncio.create_task(self._drain_after_timeout(gen_id))
+        return True
+    return False
+
   async def on_subscribe(self, gen_id: str, sub_id: str) -> int:
     """Register ``sub_id``; cancel any active drain timer and revive DRAINING -> RUNNING."""
     count = await self._subscribers.register(gen_id, sub_id)
@@ -69,11 +82,8 @@ class DeferredCanceller:
   async def on_unsubscribe(self, gen_id: str, sub_id: str) -> int:
     """Unregister ``sub_id``; enter DRAINING and arm the drain timer if count hits 0."""
     count = await self._subscribers.unregister(gen_id, sub_id)
-    async with self._lock:
-      if count == 0 and await self._registry.get_status(gen_id) == GenerationStatus.RUNNING:
-        await self._registry.transition(gen_id, GenerationStatus.DRAINING)
-        await self._cancel_drain_timer(gen_id)
-        self._drain_tasks[gen_id] = asyncio.create_task(self._drain_after_timeout(gen_id))
+    if count == 0:
+      await self.schedule_drain_if_empty(gen_id)
     return count
 
   async def stop(self, gen_id: str) -> None:
@@ -88,3 +98,10 @@ class DeferredCanceller:
       await self._gen_store.mark_terminal(gen_id, TerminalStatus.STOPPED)
     if self._on_cancel is not None:
       await self._on_cancel(gen_id)
+
+  async def aclose(self) -> None:
+    """Cancel all pending drain timer tasks cleanly on shutdown."""
+    async with self._lock:
+      gen_ids = list(self._drain_tasks.keys())
+      for gen_id in gen_ids:
+        await self._cancel_drain_timer(gen_id)

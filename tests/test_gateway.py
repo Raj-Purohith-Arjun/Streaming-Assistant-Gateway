@@ -264,3 +264,22 @@ async def test_gateway_serves_static_demo_page() -> None:
   assert resp.status_code == 200
   assert "text/html" in resp.headers.get("content-type", "")
   assert "Streaming Assistant Gateway" in resp.text
+
+
+async def test_stop_after_completed_preserves_completed_status() -> None:
+  """I4: POST /stop after COMPLETED returns actual terminal status COMPLETED."""
+  service, _ = _build_test_service(tokens=["a", "b"], tokens_per_second=500.0)
+  app = create_app(service=service)
+  payload = {"session_id": "s-done-stop", "user_id": "u-done-stop", "prompt": "hi"}
+
+  async with httpx.AsyncClient(
+    transport=httpx.ASGITransport(app=app),
+    base_url="http://test",
+  ) as client:
+    stream_resp = await client.post("/v1/stream", json=payload)
+    assert stream_resp.status_code == 200
+    gen_id = stream_resp.headers["x-generation-id"]
+
+    stop_resp = await client.post(f"/v1/generations/{gen_id}/stop")
+    assert stop_resp.status_code == 200
+    assert stop_resp.json() == {"gen_id": gen_id, "status": "COMPLETED"}

@@ -19,7 +19,7 @@ from app.sse import SseEncoder
 from app.store.protocol import InvalidOffsetError, OffsetAheadError
 from app.store.redis_store import RedisGenerationStore
 from app.store.subscribers import RedisSubscriberRegistry
-from app.upstream import SyntheticAdapter
+from app.upstream import GeminiAdapter, GroqAdapter, SyntheticAdapter, UpstreamAdapter
 
 
 class StreamRequest(BaseModel):
@@ -30,6 +30,31 @@ class StreamRequest(BaseModel):
   prompt: str = Field(min_length=1)
   metadata: dict[str, str] = Field(default_factory=dict)
   cancellation_token: str | None = None
+
+
+def build_upstream_adapter(settings: Settings) -> UpstreamAdapter:
+  """Build the configured upstream LLM adapter (single provider, no routing or fallback)."""
+  provider = settings.upstream_provider.lower()
+  if provider == "synthetic":
+    return SyntheticAdapter(
+      tokens=["Hello", " from", " Streaming", " Assistant", " Gateway!"],
+      tokens_per_second=settings.synthetic_tokens_per_second,
+    )
+  if provider == "gemini":
+    if not settings.upstream_api_key:
+      raise ValueError("UPSTREAM_API_KEY required for gemini")
+    return GeminiAdapter(
+      api_key=settings.upstream_api_key,
+      model=settings.upstream_model or "gemini-2.0-flash",
+    )
+  if provider == "groq":
+    if not settings.upstream_api_key:
+      raise ValueError("UPSTREAM_API_KEY required for groq")
+    return GroqAdapter(
+      api_key=settings.upstream_api_key,
+      model=settings.upstream_model or "llama-3.3-70b-versatile",
+    )
+  raise ValueError(f"Unsupported upstream provider: {settings.upstream_provider}")
 
 
 def _build_default_service(settings: Settings | None = None) -> GatewayService:
@@ -44,10 +69,7 @@ def _build_default_service(settings: Settings | None = None) -> GatewayService:
     gen_store=redis_store,
     drain_timeout_seconds=cfg.drain_timeout_seconds,
   )
-  upstream = SyntheticAdapter(
-    tokens=["Hello", " from", " Streaming", " Assistant", " Gateway!"],
-    tokens_per_second=25.0,
-  )
+  upstream = build_upstream_adapter(cfg)
   return GatewayService(
     gen_store=redis_store,
     lease_store=redis_store,
@@ -123,7 +145,9 @@ def create_app(service: GatewayService | None = None) -> FastAPI:
       await gateway_service.stop(gen_id)
     except KeyError as exc:
       raise HTTPException(status_code=404, detail=f"Generation {gen_id!r} not found") from exc
-    return {"gen_id": gen_id, "status": "STOPPED"}
+    terminal = await gateway_service._gen_store.read_terminal(gen_id)
+    actual_status = terminal.status.value if terminal is not None else "STOPPED"
+    return {"gen_id": gen_id, "status": actual_status}
 
   return gateway_app
 

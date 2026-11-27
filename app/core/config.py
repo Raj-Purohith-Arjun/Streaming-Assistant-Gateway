@@ -31,6 +31,11 @@ class Settings(BaseSettings):
   lease_ttl_ms: int = Field(default=5000, alias="LEASE_TTL_MS")
   subscriber_ttl_seconds: float = Field(default=30.0, alias="SUBSCRIBER_TTL_SECONDS")
 
+  upstream_provider: str = Field(default="synthetic", alias="UPSTREAM_PROVIDER")
+  upstream_api_key: str = Field(default="", alias="UPSTREAM_API_KEY")
+  upstream_model: str = Field(default="", alias="UPSTREAM_MODEL")
+  synthetic_tokens_per_second: float = Field(default=25.0, alias="SYNTHETIC_TOKENS_PER_SECOND")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

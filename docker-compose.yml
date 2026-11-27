@@ -14,6 +14,7 @@ services:
       UPSTREAM_PROVIDER: ${UPSTREAM_PROVIDER:-synthetic}
       UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:-}
       UPSTREAM_MODEL: ${UPSTREAM_MODEL:-}
+      SYNTHETIC_TOKENS_PER_SECOND: ${SYNTHETIC_TOKENS_PER_SECOND:-4.0}
     depends_on:
       redis:
         condition: service_healthy

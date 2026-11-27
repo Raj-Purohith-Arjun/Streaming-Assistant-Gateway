@@ -37,7 +37,10 @@ def build_upstream_adapter(settings: Settings) -> UpstreamAdapter:
   provider = settings.upstream_provider.lower()
   if provider == "synthetic":
     return SyntheticAdapter(
-      tokens=["Hello", " from", " Streaming", " Assistant", " Gateway!"],
+      tokens=[
+        "Hello", " and", " welcome", " to", " the", " Streaming", " Assistant", " Gateway.",
+        " This", " demonstrates", " resumable", " streaming", " with", " Redis", " backing.",
+      ],
       tokens_per_second=settings.synthetic_tokens_per_second,
     )
   if provider == "gemini":

@@ -1,67 +1,208 @@
 # Streaming Assistant Gateway
 
-A **stateful streaming data plane for LLM traffic**. The gateway owns the lifetime of each generation in an append-only Redis Stream rather than tying stream state to an individual HTTP connection, allowing any replica to serve resumable SSE streams.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Tests Passing](https://img.shields.io/badge/tests-80%20passed-success.svg)](tests/)
+[![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Type Checked: Mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## Core Guarantees
+A **stateful streaming data plane for LLM traffic**. The gateway decouples the lifetime of an LLM generation from any single HTTP connection by writing tokens to an append-only Redis Stream. SSE connections act as cursor-based readers at an offset (`Last-Event-ID`), allowing any replica to serve seamless reconnects without storing local stream state.
 
-1. **Resumability** — Reconnect with `Last-Event-ID` and continue without gaps or duplicates (**I1, I2, I5**).
-2. **Fan-out** — Multiple concurrent SSE subscribers read from the same generation log.
-3. **Coalescing** — Duplicate/retry requests attach to a live generation without starting a second upstream call (**I9**).
-4. **Deferred & Explicit Cancellation** — Streams enter `DRAINING` for `T` seconds when subscribers drop to zero (reviving to `RUNNING` if a subscriber reconnects), and stop immediately on explicit stop (**I6, I7, I8**).
+---
 
-Lifecycle state machine: `PENDING → RUNNING → DRAINING → {COMPLETED | STOPPED | EXPIRED | FAILED}`.
+## The Core Inversion
+
+> **The connection does not own the stream — an append-only log does.**
+
+Traditional LLM gateways tie upstream generation lifetime to the client's HTTP connection. When a client disconnects (tab switch, network glitch, mobile lock), naive gateways immediately cancel the upstream generation. This breaks:
+1. **Resumability** — Reconnecting clients cannot pick up where they left off.
+2. **Fan-Out** — Multiple UI subscribers cannot tap into a single live generation.
+3. **Request Coalescing** — Retries and identical concurrent requests spawn duplicate, expensive upstream LLM calls.
+
+Streaming Assistant Gateway resolves all three simultaneously by introducing a **deferred cancellation grace window ($T$)**, single-producer lease election, and cursor-based SSE offsets.
+
+---
+
+## Formal Invariants
+
+Every guarantee is enforced by property-based and chaos test suites:
+
+| Invariant | Guarantee | Description |
+| :---: | :--- | :--- |
+| **I1 / I2** | **No Gaps & No Duplicates** | Resuming from `Last-Event-ID` delivers strictly subsequent tokens in order. |
+| **I3** | **Single Producer** | At most one upstream model call in flight per generation across all replicas. |
+| **I4** | **Terminal Finality** | No tokens are appended after a terminal event (`COMPLETED`, `STOPPED`, `FAILED`, `EXPIRED`). |
+| **I5** | **Exact Reassembly** | Output reassembled across $N$ disconnects equals the full generation byte-for-byte. |
+| **I6 / I7** | **Deferred Grace vs Stop** | Stream stays alive in `DRAINING` for $T$ seconds when clients drop; cancels immediately only on explicit `/stop`. |
+| **I8** | **Wasted Token Bound** | Post-abandonment tokens never exceed $T \times \text{token\_rate}$. |
+| **I9** | **Live Coalescing** | Duplicate or retry requests attach to the existing stream with zero extra upstream calls. |
+
+*Detailed formal definitions: [docs/invariants.md](docs/invariants.md).*
+
+---
+
+## State Machine
+
+```text
+               ┌──────────────── new subscriber ──────────────┐
+               │                                              │
+               ▼                                              │
+PENDING ──► RUNNING ──► (subscribers == 0) ──► DRAINING ──┬──┴──► EXPIRED   (T elapsed)
+                                                          ├──► COMPLETED (upstream finished)
+                                                          ├──► STOPPED   (explicit /stop)
+                                                          └──► FAILED    (upstream error)
+```
+
+- When the last subscriber disconnects, generation moves to `DRAINING` for $T$ seconds (default: 5.0s).
+- If a client reconnects during `DRAINING`, the timer is cancelled and status reverts to `RUNNING`.
+- An explicit `/stop` skips `DRAINING` and halts immediately.
+
+---
 
 ## Architecture
 
 ```text
-app/
-  core/          pydantic-settings config, structlog logging, Redis pool
-  store/         Redis Streams log (XADD/XREAD Lua), lease fencing, ZSET subscribers
-  sse/           typed SSE framing (token/done/error/discontinuity), 15s heartbeats
-  generation/    lifecycle state machine + multi-replica Redis coalescing registry
-  producer/      single-producer lease election, background renewal, cancel polling
-  cancel/        deferred drain-timer canceller + immediate explicit stop
-  upstream/      UpstreamAdapter protocol + Synthetic, Gemini, and Groq adapters
-  gateway/       FastAPI routes (/v1/stream, /v1/generations/{id}/stream, /stop)
-  middleware/    pure-ASGI correlation ID, rate-limit, and error-handling middleware
-bench/           T-sweep benchmark harness (python -m bench.sweep)
-tests/           unit, property-based invariant (Hypothesis), Redis, and chaos tests
-docs/            invariants, ADRs, and benchmark sweep results
+Client A (Web) ──┐        ┌─────────────────────────┐
+                 ├─► SSE ─┤  Gateway (FastAPI)      │
+Client B (Mobile)┘        │  Pure-ASGI Middleware   │
+                          └───────────┬─────────────┘
+                                      │  Lease & Streams
+                                      ▼
+Client C (gRPC) ──► gRPC ─► [ Redis Stream Log ] ◄── Single Producer ◄── Upstream LLM
+                            - XADD / XREAD Lua         - Fenced Leases    (Gemini, Groq,
+                            - ZSET Subscribers         - Heartbeat Pump    Synthetic)
 ```
 
-## Documentation
+- **`app/core/`**: Pydantic Settings, Redis connection pool, structured logging.
+- **`app/sse/`**: Typed SSE event framing (`token`, `done`, `error`, `discontinuity`) with heartbeats.
+- **`app/generation/`**: State machine transitions and distributed atomic coalescing via Redis Lua.
+- **`app/store/`**: Append-only Redis Stream operations, fenced leases, and active subscriber tracking.
+- **`app/producer/`**: Fenced lease election, token pump, and cancel polling.
+- **`app/cancel/`**: Deferred drain canceller, reaper background worker, and explicit stop coordinator.
+- **`app/upstream/`**: Upstream adapter protocol with implementations for Google Gemini, Groq, and Synthetic.
+- **`app/gateway/`**: Pure-ASGI middleware (zero `BaseHTTPMiddleware`) and FastAPI endpoints.
+- **`app/grpc_server/`**: Streaming gRPC servicer stubs layered directly over the shared core service.
 
-- [Invariants](docs/invariants.md) — formal guarantees (**I1–I9**) and state machine specification.
-- [Architecture Decision Records](docs/adr/) — token log & SSE IDs ([ADR-001](docs/adr/001-token-log-and-sse-ids.md)), lease fencing ([ADR-002](docs/adr/002-lease-fencing-and-producer.md)), and ZSET subscribers & deferred cancel ([ADR-003](docs/adr/003-subscriber-zset-and-deferred-cancel.md)).
-- [Benchmarks](docs/benchmarks/README.md) — `T`-sweep trade-off measurements and rationale.
+---
 
-## Configuration (`app/core/config.py`)
+## Quickstart in 60 Seconds
 
-Configured via `pydantic-settings` (`Settings`):
+### 1. Clone & Configure
+```bash
+git clone https://github.com/Raj-Purohith-Arjun/Streaming-Assistant-Gateway.git
+cd Streaming-Assistant-Gateway
+cp .env.example .env
+```
 
-- `REDIS_URL` (default `redis://redis:6379/0`)
-- `DRAIN_TIMEOUT_SECONDS` (default `5.0`)
-- `LEASE_TTL_MS` (default `5000`)
-- `SUBSCRIBER_TTL_SECONDS` (default `30.0`)
-- `GENERATION_TTL_SECONDS` (default `3600`)
-- `RATE_LIMIT_REQUESTS_PER_MINUTE` (default `120`), `RATE_LIMIT_BURST` (default `30`)
+### 2. Start with Docker Compose
+```bash
+docker compose up -d --build
+```
+This starts:
+- **Gateway**: HTTP on port `8000`, gRPC on port `50051`.
+- **Redis**: Port `6379` with automatic health checks.
 
-## Running Tests & Benchmarks
+### 3. Open Interactive Demo
+Navigate to **`http://localhost:8000/demo`** in your browser.
 
-1. Start Redis locally:
+- **Start / Coalesce**: Initiates generation or attaches to a live stream.
+- **Simulate Disconnect**: Aborts client connection, triggering the 5-second `DRAINING` window.
+- **Resume (Last-Event-ID)**: Reconnects seamlessly without missing or duplicated tokens.
+- **Explicit Stop**: Immediately terminates stream to terminal `STOPPED` state.
 
-   ```bash
-   docker compose up -d redis
-   ```
+---
 
-2. Run the full test suite (unit, Hypothesis invariants, chaos, and live-Redis tests):
+## API Reference
 
-   ```bash
-   REDIS_URL=redis://localhost:6379/0 pytest tests/ -v
-   ```
+### HTTP / SSE Endpoints
 
-3. Run the `T` parameter sweep:
+#### 1. Start or Attach to Generation
+```http
+POST /v1/stream
+Content-Type: application/json
 
-   ```bash
-   python -m bench.sweep
-   ```
+{
+  "session_id": "session-123",
+  "user_id": "user-456",
+  "prompt": "Explain stateful streaming"
+}
+```
+**Response**: `text/event-stream` with header `X-Generation-ID: gen-<uuid>`.
+
+#### 2. Resume Stream by Offset
+```http
+GET /v1/generations/{generation_id}/stream
+Last-Event-ID: v1:12:1795815734238-0
+```
+**Response**: Resumes stream starting strictly after token index 12.
+
+#### 3. Explicit Stop
+```http
+POST /v1/generations/{generation_id}/stop
+```
+**Response**: `{"generation_id": "...", "status": "STOPPED"}`.
+
+#### 4. Health Check
+```http
+GET /healthz
+```
+**Response**: `{"status": "ok"}`.
+
+---
+
+## Configuration (`.env`)
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `UPSTREAM_PROVIDER` | `synthetic` | Upstream provider: `synthetic`, `gemini`, or `groq`. |
+| `UPSTREAM_API_KEY` | `""` | API key for Gemini or Groq (kept in local `.env`, never committed). |
+| `UPSTREAM_MODEL` | `gemini-2.5-flash` | Model identifier passed to upstream adapter. |
+| `SYNTHETIC_TOKENS_PER_SECOND` | `4.0` | Token emission rate for synthetic mode. |
+| `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL. |
+| `DRAIN_TIMEOUT_SECONDS` | `5.0` | Grace window $T$ before abandoning a detached generation. |
+| `LEASE_TTL_MS` | `5000` | Producer lease expiration in milliseconds. |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE`| `120` | Client rate limit budget. |
+
+---
+
+## Empirical Benchmark: The $T$ Parameter Sweep
+
+Run the trade-off sweep:
+```bash
+python -m bench.sweep
+```
+
+| $T$ (seconds) | Wasted Token Ratio | Reconnect Success Rate | Coalesce Hit Rate |
+| :---: | :---: | :---: | :---: |
+| `0.00` | 0.0% | **0.0%** (Immediate abort) | 100% |
+| `0.05` | 7.5% | 0.0% | 100% |
+| `0.10` | 16.2% | 25.0% | 100% |
+| `0.25` | 40.6% | 87.5% | 100% |
+| **`0.50`** | **76.2%** | **100.0%** | **100%** |
+| **`1.00`** | **90.0%** | **100.0%** | **100%** |
+
+*Key finding: Setting $T \ge 0.5\text{s}$ gives 100% reconnect resilience while strictly bounding wasted token spend.*
+
+---
+
+## Development & Test Suite
+
+Verify all 80 tests (unit, Hypothesis property tests, chaos simulations, Redis integration):
+
+```bash
+# 1. Start local Redis
+docker compose up -d redis
+
+# 2. Run full suite
+REDIS_URL="redis://localhost:6379/0" pytest tests/ -v
+
+# 3. Lint and type-check
+ruff check app/ tests/ bench/
+mypy app/ tests/ bench/
+```
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.

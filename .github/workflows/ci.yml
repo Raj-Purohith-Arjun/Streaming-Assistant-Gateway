@@ -44,7 +44,7 @@ jobs:
         run: make proto
 
       - name: Ruff lint
-        run: ruff check app/ tests/ bench/
+        run: ruff check app/ tests/ bench/ examples/
 
       - name: Type check (mypy)
         run: >-
@@ -61,6 +61,7 @@ jobs:
           app/grpc_server/server.py
           tests/
           bench/
+          examples/
 
       - name: Run pytest
         run: pytest tests/ -v

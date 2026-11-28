@@ -132,6 +132,11 @@ Reproduce with `REDIS_URL=redis://localhost:6379/0 python -m bench.latency` (`be
 - `POST /v1/generations/{generation_id}/stop` — Immediately transition to `STOPPED`.
 - `GET /healthz` — Health check (`{"status": "ok"}`).
 
+### Lightweight Client Examples (`Last-Event-ID` Auto-Resume)
+
+- **Python (`httpx`):** [examples/resumable_client.py](examples/resumable_client.py) — `ResumableStreamClient` tracks `X-Generation-ID` + `Last-Event-ID` and automatically resumes on mid-stream drops (`python -m examples.resumable_client`).
+- **Browser / Node 18+ (`fetch`):** [examples/browser_client.js](examples/browser_client.js) — zero-dependency `streamWithResume()` helper with exponential backoff.
+
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `UPSTREAM_PROVIDER` | `synthetic` | `synthetic`, `gemini`, or `groq`. |

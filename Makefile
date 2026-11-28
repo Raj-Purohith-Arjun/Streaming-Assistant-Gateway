@@ -17,8 +17,8 @@ test:
 	$(PYTHON) -m pytest -q
 
 verify: proto
-	$(PYTHON) -m ruff check app/ tests/ bench/
-	$(PYTHON) -m mypy app/cancel app/core app/gateway app/generation app/middleware app/producer app/sse app/store app/upstream app/grpc_server/server.py tests/ bench/
+	$(PYTHON) -m ruff check app/ tests/ bench/ examples/
+	$(PYTHON) -m mypy app/cancel app/core app/gateway app/generation app/middleware app/producer app/sse app/store app/upstream app/grpc_server/server.py tests/ bench/ examples/
 	$(PYTHON) -m pytest tests/ -v
 
 docker-build:

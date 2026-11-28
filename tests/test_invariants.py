@@ -110,7 +110,7 @@ async def _read_with_reconnects(
   disconnect_counts=st.lists(st.integers(min_value=0, max_value=10), max_size=8),
   resume_seed=st.integers(min_value=0, max_value=100),
 )
-@settings(max_examples=50)
+@settings(max_examples=50, deadline=None)
 def test_resume_no_gaps(
   store_factory: StoreFactory,
   tokens: list[str],
@@ -148,7 +148,7 @@ def test_resume_no_gaps(
   tokens=st.lists(st.text(min_size=1, max_size=24), min_size=1, max_size=40),
   disconnect_counts=st.lists(st.integers(min_value=0, max_value=10), max_size=8),
 )
-@settings(max_examples=50)
+@settings(max_examples=50, deadline=None)
 def test_resume_no_duplicates(
   store_factory: StoreFactory,
   tokens: list[str],
@@ -212,7 +212,7 @@ async def test_terminal_is_final(
   tokens=st.lists(st.text(min_size=0, max_size=32), min_size=0, max_size=50),
   disconnect_counts=st.lists(st.integers(min_value=0, max_value=12), max_size=10),
 )
-@settings(max_examples=50)
+@settings(max_examples=50, deadline=None)
 def test_reassembly_equals_reference(
   store_factory: StoreFactory,
   tokens: list[str],

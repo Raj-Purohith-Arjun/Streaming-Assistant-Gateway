@@ -2,7 +2,12 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 
-from app.generation import TERMINAL_STATUSES, GenerationRegistryProtocol, GenerationStatus
+from app.generation import (
+  TERMINAL_STATUSES,
+  GenerationRegistryProtocol,
+  GenerationStatus,
+  InvalidTransitionError,
+)
 from app.store.protocol import GenerationClosedError, GenerationStore, TerminalStatus
 from app.store.subscribers import SubscriberRegistry
 
@@ -46,8 +51,9 @@ class DeferredCanceller:
         await self._subscribers.active_count(gen_id) == 0
         and await self._registry.get_status(gen_id) == GenerationStatus.DRAINING
       ):
-        await self._registry.transition(gen_id, GenerationStatus.EXPIRED)
-        should_cancel = True
+        with contextlib.suppress(InvalidTransitionError):
+          await self._registry.transition(gen_id, GenerationStatus.EXPIRED)
+          should_cancel = True
 
     if not should_cancel:
       return
@@ -64,7 +70,10 @@ class DeferredCanceller:
         await self._subscribers.active_count(gen_id) == 0
         and await self._registry.get_status(gen_id) == GenerationStatus.RUNNING
       ):
-        await self._registry.transition(gen_id, GenerationStatus.DRAINING)
+        try:
+          await self._registry.transition(gen_id, GenerationStatus.DRAINING)
+        except InvalidTransitionError:
+          return False
         await self._cancel_drain_timer(gen_id)
         self._drain_tasks[gen_id] = asyncio.create_task(self._drain_after_timeout(gen_id))
         return True
@@ -76,7 +85,8 @@ class DeferredCanceller:
     async with self._lock:
       await self._cancel_drain_timer(gen_id)
       if await self._registry.get_status(gen_id) == GenerationStatus.DRAINING:
-        await self._registry.transition(gen_id, GenerationStatus.RUNNING)
+        with contextlib.suppress(InvalidTransitionError):
+          await self._registry.transition(gen_id, GenerationStatus.RUNNING)
     return count
 
   async def on_unsubscribe(self, gen_id: str, sub_id: str) -> int:
@@ -92,7 +102,8 @@ class DeferredCanceller:
       await self._cancel_drain_timer(gen_id)
       status = await self._registry.get_status(gen_id)
       if status not in TERMINAL_STATUSES:
-        await self._registry.transition(gen_id, GenerationStatus.STOPPED)
+        with contextlib.suppress(InvalidTransitionError):
+          await self._registry.transition(gen_id, GenerationStatus.STOPPED)
 
     with contextlib.suppress(GenerationClosedError):
       await self._gen_store.mark_terminal(gen_id, TerminalStatus.STOPPED)

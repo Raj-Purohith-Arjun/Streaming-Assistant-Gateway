@@ -11,6 +11,7 @@ from app.core.logging import configure_logging
 from app.core.redis import get_redis_client
 from app.gateway.service import GatewayService
 from app.generation import RedisGenerationRegistry
+from app.middleware.auth import ApiKeyAuthMiddleware
 from app.middleware.error_handling import ErrorHandlingMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.tracing import CorrelationIdMiddleware
@@ -90,11 +91,12 @@ def _derive_request_key(request: StreamRequest) -> str:
   return hashlib.sha256(raw).hexdigest()
 
 
-def create_app(service: GatewayService | None = None) -> FastAPI:
+def create_app(service: GatewayService | None = None, api_key: str | None = None) -> FastAPI:
   """Create and configure the FastAPI gateway application."""
   settings = get_settings()
   configure_logging()
   gateway_service = service or _build_default_service(settings)
+  resolved_api_key = api_key if api_key is not None else settings.gateway_api_key
 
   gateway_app = FastAPI(title="Streaming Assistant Gateway", version="0.1.0")
   gateway_app.add_middleware(ErrorHandlingMiddleware)
@@ -104,6 +106,7 @@ def create_app(service: GatewayService | None = None) -> FastAPI:
     requests_per_minute=settings.rate_limit_requests_per_minute,
     burst=settings.rate_limit_burst,
   )
+  gateway_app.add_middleware(ApiKeyAuthMiddleware, api_key=resolved_api_key)
 
   @gateway_app.get("/healthz")
   async def healthz() -> dict[str, str]:

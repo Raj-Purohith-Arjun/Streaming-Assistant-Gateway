@@ -95,8 +95,10 @@ async def _uvicorn_server(app: FastAPI) -> AsyncIterator[str]:
       await asyncio.sleep(0.01)
     yield f"http://127.0.0.1:{port}"
   finally:
+    server.force_exit = True
     server.should_exit = True
-    await task
+    with contextlib.suppress(TimeoutError):
+      await asyncio.wait_for(task, timeout=2.0)
     sock.close()
 
 

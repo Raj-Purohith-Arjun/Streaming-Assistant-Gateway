@@ -40,6 +40,7 @@ class Settings(BaseSettings):
   upstream_api_key: str = Field(default="", alias="UPSTREAM_API_KEY")
   upstream_model: str = Field(default="", alias="UPSTREAM_MODEL")
   synthetic_tokens_per_second: float = Field(default=25.0, alias="SYNTHETIC_TOKENS_PER_SECOND")
+  gateway_api_key: str = Field(default="", alias="GATEWAY_API_KEY")
 
 
 @lru_cache(maxsize=1)

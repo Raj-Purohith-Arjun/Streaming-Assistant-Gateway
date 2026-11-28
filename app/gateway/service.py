@@ -7,6 +7,7 @@ import httpx
 import structlog
 
 from app.cancel import DeferredCanceller
+from app.core.telemetry import GatewayTelemetry
 from app.generation import GenerationRegistryProtocol, GenerationStatus, InvalidTransitionError
 from app.producer import Producer, ProducerConfig
 from app.sse import SseEncoder
@@ -37,6 +38,7 @@ class GatewayService:
     sse_encoder: SseEncoder,
     producer_config: ProducerConfig | None = None,
     owner_id: str | None = None,
+    telemetry: GatewayTelemetry | None = None,
   ) -> None:
     self._gen_store = gen_store
     self._lease_store = lease_store
@@ -47,6 +49,7 @@ class GatewayService:
     self._sse_encoder = sse_encoder
     self._producer_config = producer_config
     self._owner_id = owner_id or f"gateway-{uuid4()}"
+    self._telemetry = telemetry
     self._producer_tasks: dict[str, asyncio.Task[None]] = {}
 
   async def _run_producer(self, gen_id: str, prompt: str) -> None:
@@ -75,16 +78,29 @@ class GatewayService:
 
   async def start_or_attach(self, request_key: str, prompt: str) -> tuple[str, bool]:
     """Attach to a live generation for ``request_key`` or start a new producer (I9)."""
-    gen_id, created = await self._registry.get_or_create(request_key)
-    if created:
-      await self._registry.transition(gen_id, GenerationStatus.RUNNING)
-      task = asyncio.create_task(self._run_producer(gen_id, prompt))
-      self._producer_tasks[gen_id] = task
+    span_cm = (
+      self._telemetry.start_or_attach_span()
+      if self._telemetry is not None
+      else contextlib.nullcontext()
+    )
+    with span_cm as span:
+      gen_id, created = await self._registry.get_or_create(request_key)
+      if created:
+        await self._registry.transition(gen_id, GenerationStatus.RUNNING)
+        task = asyncio.create_task(self._run_producer(gen_id, prompt))
+        self._producer_tasks[gen_id] = task
 
-      def _cleanup(_task: asyncio.Task[None]) -> None:
-        self._producer_tasks.pop(gen_id, None)
+        def _cleanup(_task: asyncio.Task[None]) -> None:
+          self._producer_tasks.pop(gen_id, None)
 
-      task.add_done_callback(_cleanup)
+        task.add_done_callback(_cleanup)
+
+      if self._telemetry is not None:
+        coalesced = not created
+        if span is not None:
+          span.set_attribute("gen_id", gen_id)
+          span.set_attribute("coalesced", coalesced)
+        self._telemetry.record_request(coalesced=coalesced)
     return gen_id, created
 
   async def validate_stream_request(self, gen_id: str, last_event_id: str | None) -> None:

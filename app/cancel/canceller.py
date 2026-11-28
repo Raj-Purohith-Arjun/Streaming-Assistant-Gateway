@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable
 
+from app.core.telemetry import GatewayTelemetry
 from app.generation import (
   TERMINAL_STATUSES,
   GenerationRegistryProtocol,
@@ -22,6 +23,7 @@ class DeferredCanceller:
     gen_store: GenerationStore,
     drain_timeout_seconds: float,
     on_cancel: Callable[[str], Awaitable[None]] | None = None,
+    telemetry: GatewayTelemetry | None = None,
   ) -> None:
     if drain_timeout_seconds <= 0:
       raise ValueError(f"drain_timeout_seconds must be positive, got {drain_timeout_seconds}")
@@ -30,6 +32,7 @@ class DeferredCanceller:
     self._gen_store = gen_store
     self._drain_timeout_seconds = drain_timeout_seconds
     self._on_cancel = on_cancel
+    self._telemetry = telemetry
     self._lock = asyncio.Lock()
     self._drain_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -62,6 +65,8 @@ class DeferredCanceller:
       await self._gen_store.mark_terminal(gen_id, TerminalStatus.EXPIRED)
     if self._on_cancel is not None:
       await self._on_cancel(gen_id)
+    if self._telemetry is not None:
+      self._telemetry.record_drain_expiration()
 
   async def schedule_drain_if_empty(self, gen_id: str) -> bool:
     """Transition RUNNING -> DRAINING and arm the drain timer if active_count is 0."""
@@ -87,6 +92,8 @@ class DeferredCanceller:
       if await self._registry.get_status(gen_id) == GenerationStatus.DRAINING:
         with contextlib.suppress(InvalidTransitionError):
           await self._registry.transition(gen_id, GenerationStatus.RUNNING)
+          if self._telemetry is not None:
+            self._telemetry.record_drain_revival()
     return count
 
   async def on_unsubscribe(self, gen_id: str, sub_id: str) -> int:
@@ -109,6 +116,8 @@ class DeferredCanceller:
       await self._gen_store.mark_terminal(gen_id, TerminalStatus.STOPPED)
     if self._on_cancel is not None:
       await self._on_cancel(gen_id)
+    if self._telemetry is not None:
+      self._telemetry.record_explicit_stop()
 
   async def aclose(self) -> None:
     """Cancel all pending drain timer tasks cleanly on shutdown."""
